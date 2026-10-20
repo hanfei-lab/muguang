@@ -1,0 +1,6 @@
+.DS_Store
+._*
+work/
+.build/
+*.app/
+*.dSYM/
