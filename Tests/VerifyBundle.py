@@ -15,7 +15,7 @@ for bundle, executable_name in bundles:
         info = plistlib.load(handle)
     assert info["LSMinimumSystemVersion"] == "10.15", bundle
     assert info["LSMinimumSystemVersionByArchitecture"] == expected, bundle
-    assert info["CFBundleShortVersionString"] == "0.2.1", bundle
+    assert info["CFBundleShortVersionString"] == "0.2.2", bundle
     executable = bundle / "Contents/MacOS" / executable_name
     arches = subprocess.check_output(["xcrun", "lipo", "-archs", str(executable)], encoding="utf-8").split()
     assert set(arches) == set(expected), arches

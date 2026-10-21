@@ -19,7 +19,7 @@ if arguments.contains("--restore") {
 }
 if arguments.contains("--diagnostics") {
     let ids = activeDisplayIDs()
-    print("暮光 0.2.1 · \(ProcessInfo.processInfo.operatingSystemVersionString)")
+    print("暮光 0.2.2 · \(ProcessInfo.processInfo.operatingSystemVersionString)")
     print("在线显示器：\(ids.count)（此检查不修改屏幕）")
     for id in ids {
         print("显示器 \(id): \(CGDisplayPixelsWide(id))×\(CGDisplayPixelsHigh(id)), gamma capacity=\(CGDisplayGammaTableCapacity(id)), readable=\(GammaTable.read(id) != nil)")
@@ -40,8 +40,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let popover = NSPopover()
     private var status: NSStatusItem!
     private var scheduler: Timer?
-    private var refreshWork: DispatchWorkItem?
-    private var sleeping = false
+    private lazy var recovery = DisplayRecovery(
+        suspend: { [weak self] in self?.engine.suspend(); self?.panel.refresh() },
+        evaluate: { [weak self] in self?.evaluate(force: true) })
     private let dryRun = arguments.contains("--smoke-test") || arguments.contains("--preview")
     private let preferenceKey = "MuguangPreferences.v1"
 
@@ -71,15 +72,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.message = error; self.panel.refresh()
         }
         let workspace = NSWorkspace.shared.notificationCenter
-        workspace.addObserver(self, selector: #selector(willSleep), name: NSWorkspace.willSleepNotification, object: nil)
-        workspace.addObserver(self, selector: #selector(didWake), name: NSWorkspace.didWakeNotification, object: nil)
-        workspace.addObserver(self, selector: #selector(willSleep), name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
-        workspace.addObserver(self, selector: #selector(didWake), name: NSWorkspace.sessionDidBecomeActiveNotification, object: nil)
+        workspace.addObserver(self, selector: #selector(systemWillSleep), name: NSWorkspace.willSleepNotification, object: nil)
+        workspace.addObserver(self, selector: #selector(systemDidWake), name: NSWorkspace.didWakeNotification, object: nil)
+        workspace.addObserver(self, selector: #selector(screensWillSleep), name: NSWorkspace.screensDidSleepNotification, object: nil)
+        workspace.addObserver(self, selector: #selector(screensDidWake), name: NSWorkspace.screensDidWakeNotification, object: nil)
+        workspace.addObserver(self, selector: #selector(sessionResigned), name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
+        workspace.addObserver(self, selector: #selector(sessionBecameActive), name: NSWorkspace.sessionDidBecomeActiveNotification, object: nil)
+        // Best-effort macOS unlock signal; public screen/session notifications
+        // and periodic readback remain independent fallbacks.
+        DistributedNotificationCenter.default().addObserver(self, selector: #selector(screenUnlocked),
+            name: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, suspensionBehavior: .deliverImmediately)
         NotificationCenter.default.addObserver(self, selector: #selector(displayChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(displayChanged), name: NSNotification.Name.NSSystemClockDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(displayChanged), name: NSNotification.Name.NSSystemTimeZoneDidChange, object: nil)
-        let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in self?.evaluate() }
-        timer.tolerance = 5
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in self?.evaluate() }
+        timer.tolerance = 1
         RunLoop.main.add(timer, forMode: .common); scheduler = timer
         evaluate()
         if !UserDefaults.standard.bool(forKey: "HasOpenedMuguang") {
@@ -114,9 +121,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if preferences.scheduled && preferences.startMinute == preferences.endMinute {
             message = "开始和结束时间相同，请设置不同的时间。"
         } else if message?.hasPrefix("开始和结束") == true { message = nil }
-        let strength = isPaused || sleeping ? 0 : preferences.strength(at: Date())
+        let strength = isPaused ? 0 : preferences.strength(at: Date())
         if !dryRun {
-            engine.set(.temperature(preferences.kelvin, brightness: preferences.brightness, strength: strength), force: force)
+            if recovery.isSuspended { engine.suspend() }
+            else { engine.set(.temperature(preferences.kelvin, brightness: preferences.brightness, strength: strength), force: force) }
             status.button?.toolTip = !preferences.enabled ? "暮光 · 已关闭" : isPaused ? "暮光 · 已暂停" : "暮光 · 点击调节"
         }
         if preferences.scheduled && preferences.startMinute == preferences.endMinute {
@@ -139,7 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func showPanel() {
         guard let button = status?.button else { return }
         loginController.refresh()
-        panel.refresh()
+        evaluate()
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
@@ -147,19 +155,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func menuPause() { togglePause() }
     @objc private func menuRestore() { update { $0.enabled = false } }
     @objc private func menuQuit() { NSApp.terminate(nil) }
-    @objc private func willSleep() {
-        sleeping = true; engine.restore(); panel.refresh()
+    private func onMain(_ action: @escaping (AppDelegate) -> Void) {
+        if Thread.isMainThread { action(self) }
+        else { DispatchQueue.main.async { [weak self] in if let self = self { action(self) } } }
     }
-    @objc private func didWake() { sleeping = false; displayChanged() }
-    @objc private func displayChanged() {
-        refreshWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.evaluate(force: true) }
-        refreshWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+    @objc private func systemWillSleep() { onMain { $0.recovery.receive(.systemSleep) } }
+    @objc private func systemDidWake() { onMain { $0.recovery.receive(.systemWake) } }
+    @objc private func screensWillSleep() { onMain { $0.recovery.receive(.screenSleep) } }
+    @objc private func screensDidWake() { onMain { $0.recovery.receive(.screenWake) } }
+    @objc private func sessionResigned() { onMain { $0.recovery.receive(.sessionInactive) } }
+    @objc private func sessionBecameActive() { onMain { $0.recovery.receive(.sessionActive) } }
+    @objc private func screenUnlocked() {
+        // Distributed notifications can describe another user's session.
+        onMain { app in
+            guard let session = CGSessionCopyCurrentDictionary() as? [String: Any],
+                  session[kCGSessionOnConsoleKey as String] as? Bool == true else { return }
+            app.recovery.receive(.unlocked)
+        }
     }
+    @objc private func displayChanged() { onMain { $0.recovery.recover() } }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showPanel(); return true }
     func applicationWillTerminate(_ notification: Notification) {
-        refreshWork?.cancel(); scheduler?.invalidate()
+        recovery.cancel(); scheduler?.invalidate()
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        DistributedNotificationCenter.default().removeObserver(self)
+        NotificationCenter.default.removeObserver(self)
         if !dryRun { engine.restore() }
     }
 

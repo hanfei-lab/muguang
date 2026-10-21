@@ -1,2 +1,4 @@
 2ee41ad7bb906ee101b60a757dfaca0175afbc18a5e6bbbfdd388abd4e4c4642  muguang-v0.2.1-macos.zip
 ebd353d99147af2af67c4ac6204dfdf75ede648a9f3b3c424529260b7b05f33e  muguang-v0.2.1-source.zip
+a929cd0f07f09fe49434fa8f79ec6ebafad1a36cca7f038e7824479e7922ff5c  muguang-v0.2.2-macos.zip
+d03caca5fbccf3e5bd09b4af55f43d139c10fe55f22e211fa1b9221d2a22ae39  muguang-v0.2.2-source.zip

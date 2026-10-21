@@ -12,5 +12,9 @@ xcrun swiftc -target "$TEST_TARGET" -module-cache-path "$BUILD_PATH/module-cache
     -framework AppKit -framework CoreGraphics -o "$BUILD_PATH/DisplayTests"
 "$BUILD_PATH/DisplayTests"
 xcrun swiftc -target "$TEST_TARGET" -module-cache-path "$BUILD_PATH/module-cache" \
+    "$SOURCE_ROOT/Sources/Core.swift" "$SOURCE_ROOT/Sources/DisplayEngine.swift" "$SOURCE_ROOT/Sources/DisplayRecovery.swift" \
+    "$SOURCE_ROOT/Tests/RecoveryTests.swift" -framework AppKit -framework CoreGraphics -o "$BUILD_PATH/RecoveryTests"
+"$BUILD_PATH/RecoveryTests"
+xcrun swiftc -target "$TEST_TARGET" -module-cache-path "$BUILD_PATH/module-cache" \
     "$SOURCE_ROOT/Sources/LoginSupport.swift" "$SOURCE_ROOT/Tests/LoginSupportTests.swift" -o "$BUILD_PATH/LoginSupportTests"
 "$BUILD_PATH/LoginSupportTests"
